@@ -25,7 +25,7 @@
 
 ```bash
 cd SillyTavern/data/<用户名>/extensions/
-git clone https://github.com/your-repo/SillyTavern-AI-Polisher.git
+git clone https://github.com/yzcaiai/st-polisher
 ```
 
 ## 使用说明

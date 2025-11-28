@@ -24,8 +24,8 @@
 ### 方法二：通过 Git 安装
 
 ```bash
-cd SillyTavern/data/<用户名>/extensions/
 git clone https://github.com/yzcaiai/st-polisher
+点击install for all user
 ```
 
 ## 使用说明

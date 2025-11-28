@@ -1,0 +1,183 @@
+/* AI Polisher 插件样式 */
+
+.ai-polisher-settings {
+    margin-bottom: 10px;
+}
+
+.ai-polisher-settings .inline-drawer-content {
+    padding: 10px;
+}
+
+.ai-polisher-section {
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #444);
+}
+
+.ai-polisher-section h4 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+
+.ai-polisher-row {
+    margin-bottom: 10px;
+}
+
+.ai-polisher-row label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 13px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+
+.ai-polisher-row .checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.ai-polisher-row .checkbox_label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.ai-polisher-row input[type="text"],
+.ai-polisher-row input[type="password"],
+.ai-polisher-row select,
+.ai-polisher-row textarea {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.ai-polisher-row input[type="range"] {
+    width: 100%;
+}
+
+.ai-polisher-apikey-row,
+.ai-polisher-model-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.ai-polisher-apikey-row input,
+.ai-polisher-model-row select {
+    flex: 1;
+}
+
+.ai-polisher-apikey-row button,
+.ai-polisher-model-row button {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ai-polisher-section textarea {
+    resize: vertical;
+    min-height: 120px;
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.ai-polisher-section .menu_button {
+    margin-top: 8px;
+}
+
+.ai-polisher-status {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    min-height: 20px;
+    background-color: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.3));
+    color: var(--SmartThemeBodyColor, #ccc);
+    transition: all 0.3s ease;
+}
+
+.ai-polisher-status:empty {
+    display: none;
+}
+
+.ai-polisher-status.error {
+    background-color: rgba(220, 53, 69, 0.3);
+    color: #ff6b6b;
+    border: 1px solid rgba(220, 53, 69, 0.5);
+}
+
+/* 按钮样式 */
+#ai_polisher_manual,
+#ai_polisher_stop {
+    width: 100%;
+    justify-content: center;
+    gap: 8px;
+}
+
+#ai_polisher_stop {
+    background-color: rgba(220, 53, 69, 0.3);
+    border-color: rgba(220, 53, 69, 0.5);
+}
+
+#ai_polisher_stop:hover {
+    background-color: rgba(220, 53, 69, 0.5);
+}
+
+#ai_polisher_reset_prompt {
+    font-size: 12px;
+}
+
+/* 滑块值显示 */
+.ai-polisher-row label span {
+    font-weight: bold;
+    color: var(--SmartThemeQuoteColor, #7ec8e3);
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .ai-polisher-apikey-row,
+    .ai-polisher-model-row {
+        flex-direction: column;
+    }
+
+    .ai-polisher-apikey-row button,
+    .ai-polisher-model-row button {
+        width: 100%;
+        height: 32px;
+    }
+}
+
+/* 润色中的消息高亮 */
+.mes.polishing .mes_text {
+    position: relative;
+}
+
+.mes.polishing .mes_text::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg,
+        var(--SmartThemeQuoteColor, #7ec8e3) 0%,
+        transparent 50%,
+        var(--SmartThemeQuoteColor, #7ec8e3) 100%);
+    background-size: 200% 100%;
+    animation: polishing-indicator 1.5s linear infinite;
+}
+
+@keyframes polishing-indicator {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}

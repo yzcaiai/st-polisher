@@ -1,6 +1,12 @@
 /**
  * SillyTavern AI Polisher (AI 润色插件)
- * 自动拦截 AI 回复并使用二级 LLM 进行润色/改写
+ * 拦截一级 LLM 输出，通过二级 LLM 润色后流式显示
+ *
+ * 工作流程：
+ * 1. 一级 LLM 生成完成后，MESSAGE_RECEIVED 事件触发
+ * 2. 立即将消息内容替换为"正在润色..."占位符
+ * 3. 调用二级 LLM 进行润色
+ * 4. 流式输出润色结果，实时更新前端显示
  */
 
 const MODULE_NAME = 'ai_polisher';
@@ -24,6 +30,7 @@ const DEFAULT_SETTINGS = {
     streamEnabled: true,
     maxTokens: 4096,
     temperature: 0.7,
+    showPlaceholder: true, // 是否显示"正在润色"占位符
     availableModels: []
 };
 
@@ -43,7 +50,6 @@ function initSettings() {
         saveSettingsDebounced();
     }
 
-    // 确保所有默认设置都存在
     for (const key in DEFAULT_SETTINGS) {
         if (extensionSettings[MODULE_NAME][key] === undefined) {
             extensionSettings[MODULE_NAME][key] = DEFAULT_SETTINGS[key];
@@ -88,6 +94,13 @@ function createSettingsHtml() {
                     <label class="checkbox_label" for="ai_polisher_enabled">
                         <input type="checkbox" id="ai_polisher_enabled" ${settings.enabled ? 'checked' : ''}>
                         <span>启用自动润色</span>
+                    </label>
+                </div>
+
+                <div class="ai-polisher-row">
+                    <label class="checkbox_label" for="ai_polisher_placeholder">
+                        <input type="checkbox" id="ai_polisher_placeholder" ${settings.showPlaceholder ? 'checked' : ''}>
+                        <span>显示"正在润色"占位符</span>
                     </label>
                 </div>
 
@@ -184,26 +197,27 @@ function createSettingsHtml() {
 function bindSettingsEvents() {
     const settings = getSettings();
 
-    // 启用开关
     $('#ai_polisher_enabled').on('change', function() {
         settings.enabled = this.checked;
         saveSettings();
         updateStatus(this.checked ? '已启用自动润色' : '已禁用自动润色');
     });
 
-    // API Endpoint
+    $('#ai_polisher_placeholder').on('change', function() {
+        settings.showPlaceholder = this.checked;
+        saveSettings();
+    });
+
     $('#ai_polisher_endpoint').on('input', function() {
         settings.apiEndpoint = this.value.trim();
         saveSettings();
     });
 
-    // API Key
     $('#ai_polisher_apikey').on('input', function() {
         settings.apiKey = this.value;
         saveSettings();
     });
 
-    // 显示/隐藏 API Key
     $('#ai_polisher_toggle_key').on('click', function() {
         const input = $('#ai_polisher_apikey');
         const icon = $(this).find('i');
@@ -216,42 +230,35 @@ function bindSettingsEvents() {
         }
     });
 
-    // 模型选择
     $('#ai_polisher_model').on('change', function() {
         settings.model = this.value;
         saveSettings();
     });
 
-    // 获取模型列表
     $('#ai_polisher_fetch_models').on('click', fetchModels);
 
-    // 流式输出
     $('#ai_polisher_stream').on('change', function() {
         settings.streamEnabled = this.checked;
         saveSettings();
     });
 
-    // Max Tokens
     $('#ai_polisher_max_tokens').on('input', function() {
         settings.maxTokens = parseInt(this.value);
         $('#ai_polisher_max_tokens_value').text(this.value);
         saveSettings();
     });
 
-    // Temperature
     $('#ai_polisher_temperature').on('input', function() {
         settings.temperature = parseFloat(this.value);
         $('#ai_polisher_temperature_value').text(this.value);
         saveSettings();
     });
 
-    // System Prompt
     $('#ai_polisher_system_prompt').on('input', function() {
         settings.systemPrompt = this.value;
         saveSettings();
     });
 
-    // 重置 System Prompt
     $('#ai_polisher_reset_prompt').on('click', function() {
         settings.systemPrompt = DEFAULT_SETTINGS.systemPrompt;
         $('#ai_polisher_system_prompt').val(settings.systemPrompt);
@@ -259,10 +266,7 @@ function bindSettingsEvents() {
         updateStatus('已重置系统提示词');
     });
 
-    // 手动润色
     $('#ai_polisher_manual').on('click', manualPolish);
-
-    // 停止润色
     $('#ai_polisher_stop').on('click', stopPolishing);
 }
 
@@ -274,7 +278,6 @@ function updateStatus(message, isError = false) {
     statusEl.text(message);
     statusEl.toggleClass('error', isError);
 
-    // 3秒后清除非错误状态
     if (!isError) {
         setTimeout(() => {
             if (statusEl.text() === message) {
@@ -317,11 +320,9 @@ async function fetchModels() {
             throw new Error('未获取到模型列表');
         }
 
-        // 更新模型下拉列表
         const select = $('#ai_polisher_model');
         select.empty();
 
-        // 按 ID 排序
         const sortedModels = models.sort((a, b) => {
             const idA = a.id || a;
             const idB = b.id || b;
@@ -333,7 +334,6 @@ async function fetchModels() {
             select.append(`<option value="${modelId}">${modelId}</option>`);
         });
 
-        // 恢复之前选择的模型
         if (settings.model && select.find(`option[value="${settings.model}"]`).length > 0) {
             select.val(settings.model);
         } else {
@@ -352,9 +352,9 @@ async function fetchModels() {
 }
 
 /**
- * 调用 API 进行润色
+ * 调用二级 LLM API 进行润色（流式）
  */
-async function polishText(text, onChunk) {
+async function polishTextStream(text, onChunk) {
     const settings = getSettings();
 
     if (!settings.apiEndpoint || !settings.apiKey) {
@@ -371,7 +371,7 @@ async function polishText(text, onChunk) {
         ],
         max_tokens: settings.maxTokens,
         temperature: settings.temperature,
-        stream: settings.streamEnabled
+        stream: true
     };
 
     const response = await fetch(`${settings.apiEndpoint}/chat/completions`, {
@@ -389,20 +389,6 @@ async function polishText(text, onChunk) {
         throw new Error(`API 错误 (${response.status}): ${errorText}`);
     }
 
-    if (settings.streamEnabled) {
-        return await handleStreamResponse(response, onChunk);
-    } else {
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        if (onChunk) onChunk(content);
-        return content;
-    }
-}
-
-/**
- * 处理流式响应
- */
-async function handleStreamResponse(response, onChunk) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullContent = '';
@@ -443,6 +429,104 @@ async function handleStreamResponse(response, onChunk) {
 }
 
 /**
+ * 调用二级 LLM API 进行润色（非流式）
+ */
+async function polishTextSync(text) {
+    const settings = getSettings();
+
+    if (!settings.apiEndpoint || !settings.apiKey) {
+        throw new Error('请先配置 API Endpoint 和 API Key');
+    }
+
+    abortController = new AbortController();
+
+    const requestBody = {
+        model: settings.model,
+        messages: [
+            { role: 'system', content: settings.systemPrompt },
+            { role: 'user', content: text }
+        ],
+        max_tokens: settings.maxTokens,
+        temperature: settings.temperature,
+        stream: false
+    };
+
+    const response = await fetch(`${settings.apiEndpoint}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${settings.apiKey}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody),
+        signal: abortController.signal
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API 错误 (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || text;
+}
+
+/**
+ * 更新消息内容（同时更新 chat 对象和 DOM）
+ */
+function updateMessageContent(messageIndex, newContent, saveChat = true) {
+    const context = SillyTavern.getContext();
+    const chat = context.chat;
+
+    if (!chat[messageIndex]) return;
+
+    // 更新 chat 对象
+    chat[messageIndex].mes = newContent;
+
+    // 更新 DOM
+    const messageEl = $(`.mes[mesid="${messageIndex}"]`);
+    if (messageEl.length > 0) {
+        const mesTextEl = messageEl.find('.mes_text');
+        if (mesTextEl.length > 0) {
+            // 尝试使用 SillyTavern 的消息格式化函数
+            if (typeof messageFormatting === 'function') {
+                try {
+                    mesTextEl.html(messageFormatting(
+                        newContent,
+                        chat[messageIndex].name,
+                        chat[messageIndex].is_system,
+                        chat[messageIndex].is_user,
+                        messageIndex
+                    ));
+                } catch (e) {
+                    // 格式化失败，使用简单处理
+                    mesTextEl.html(escapeHtml(newContent));
+                }
+            } else {
+                mesTextEl.html(escapeHtml(newContent));
+            }
+        }
+    }
+
+    // 保存聊天记录
+    if (saveChat && context.saveChatDebounced) {
+        context.saveChatDebounced();
+    }
+}
+
+/**
+ * HTML 转义
+ */
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+        .replace(/\n/g, '<br>');
+}
+
+/**
  * 获取最后一条 AI 消息
  */
 function getLastAIMessage() {
@@ -451,7 +535,6 @@ function getLastAIMessage() {
 
     if (!chat || chat.length === 0) return null;
 
-    // 从后往前找最后一条非用户消息
     for (let i = chat.length - 1; i >= 0; i--) {
         if (!chat[i].is_user && chat[i].mes) {
             return { index: i, message: chat[i] };
@@ -462,33 +545,74 @@ function getLastAIMessage() {
 }
 
 /**
- * 更新消息内容
+ * 执行润色操作
  */
-function updateMessage(index, newContent) {
-    const context = SillyTavern.getContext();
-    const chat = context.chat;
+async function performPolish(messageIndex, originalText, showPlaceholder = true) {
+    if (isPolishing) return false;
 
-    if (chat[index]) {
-        chat[index].mes = newContent;
+    const settings = getSettings();
+    isPolishing = true;
 
-        // 更新 DOM
-        const messageEl = $(`.mes[mesid="${index}"]`);
-        if (messageEl.length > 0) {
-            const mesTextEl = messageEl.find('.mes_text');
-            if (mesTextEl.length > 0) {
-                // 使用 SillyTavern 的消息格式化
-                if (typeof messageFormatting === 'function') {
-                    mesTextEl.html(messageFormatting(newContent, chat[index].name, chat[index].is_system, chat[index].is_user, index));
-                } else {
-                    mesTextEl.text(newContent);
-                }
+    // 显示按钮状态
+    $('#ai_polisher_manual').hide();
+    $('#ai_polisher_stop').show();
+
+    try {
+        // 保存原始文本
+        const context = SillyTavern.getContext();
+        const chat = context.chat;
+        if (chat[messageIndex]) {
+            if (!chat[messageIndex].extra) {
+                chat[messageIndex].extra = {};
             }
+            chat[messageIndex].extra.ai_polisher_original = originalText;
         }
 
-        // 保存聊天
-        if (context.saveChatDebounced) {
-            context.saveChatDebounced();
+        // 显示占位符
+        if (showPlaceholder && settings.showPlaceholder) {
+            updateMessageContent(messageIndex, '✨ 正在润色中...', false);
         }
+
+        updateStatus('正在润色...');
+
+        let polishedText;
+
+        if (settings.streamEnabled) {
+            // 流式输出
+            polishedText = await polishTextStream(originalText, (chunk) => {
+                updateMessageContent(messageIndex, chunk, false);
+            });
+        } else {
+            // 非流式输出
+            polishedText = await polishTextSync(originalText);
+            updateMessageContent(messageIndex, polishedText, false);
+        }
+
+        // 最终更新并保存
+        updateMessageContent(messageIndex, polishedText, true);
+        updateStatus('润色完成！');
+
+        console.log('[AI Polisher] 润色完成');
+        return true;
+
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            updateStatus('润色已停止');
+            // 恢复原始内容
+            updateMessageContent(messageIndex, originalText, true);
+        } else {
+            console.error('[AI Polisher] 润色失败:', error);
+            updateStatus(`润色失败: ${error.message}`, true);
+            // 恢复原始内容
+            updateMessageContent(messageIndex, originalText, true);
+        }
+        return false;
+
+    } finally {
+        isPolishing = false;
+        abortController = null;
+        $('#ai_polisher_manual').show();
+        $('#ai_polisher_stop').hide();
     }
 }
 
@@ -507,43 +631,10 @@ async function manualPolish() {
         return;
     }
 
-    await performPolish(lastMessage.index, lastMessage.message.mes);
-}
+    // 检查是否有原始文本（之前润色过）
+    const originalText = lastMessage.message.extra?.ai_polisher_original || lastMessage.message.mes;
 
-/**
- * 执行润色操作
- */
-async function performPolish(messageIndex, originalText) {
-    if (isPolishing) return;
-
-    isPolishing = true;
-    $('#ai_polisher_manual').hide();
-    $('#ai_polisher_stop').show();
-    updateStatus('正在润色...');
-
-    try {
-        const polishedText = await polishText(originalText, (chunk) => {
-            // 流式更新消息
-            updateMessage(messageIndex, chunk);
-        });
-
-        if (polishedText) {
-            updateMessage(messageIndex, polishedText);
-            updateStatus('润色完成！');
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            updateStatus('润色已停止');
-        } else {
-            console.error('[AI Polisher] 润色失败:', error);
-            updateStatus(`润色失败: ${error.message}`, true);
-        }
-    } finally {
-        isPolishing = false;
-        abortController = null;
-        $('#ai_polisher_manual').show();
-        $('#ai_polisher_stop').hide();
-    }
+    await performPolish(lastMessage.index, originalText, true);
 }
 
 /**
@@ -556,51 +647,67 @@ function stopPolishing() {
 }
 
 /**
- * 自动润色处理器
+ * 自动润色处理器 - 在消息渲染后触发
  */
-async function onMessageReceived(messageIndex) {
+async function onMessageRendered(messageIndex) {
     const settings = getSettings();
-
     if (!settings.enabled || isPolishing) return;
 
     const context = SillyTavern.getContext();
     const chat = context.chat;
 
-    // 获取刚收到的消息
+    // 验证消息
     const message = chat[messageIndex];
-    if (!message || message.is_user) return;
+    if (!message || message.is_user || !message.mes) return;
 
-    // 延迟一小段时间确保消息已完全渲染
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // 检查是否已经润色过（避免重复润色）
+    if (message.extra?.ai_polisher_processed) return;
 
-    await performPolish(messageIndex, message.mes);
+    // 标记为已处理
+    if (!message.extra) {
+        message.extra = {};
+    }
+    message.extra.ai_polisher_processed = true;
+
+    const originalText = message.mes;
+
+    console.log('[AI Polisher] 检测到新消息，开始自动润色...');
+
+    await performPolish(messageIndex, originalText, true);
 }
 
 /**
  * 插件入口
  */
 jQuery(async () => {
-    // 初始化设置
     initSettings();
 
-    // 添加设置面板
     const settingsHtml = createSettingsHtml();
     $('#extensions_settings').append(settingsHtml);
 
-    // 绑定事件
     bindSettingsEvents();
 
-    // 监听消息接收事件
     const context = SillyTavern.getContext();
     const { eventSource, event_types } = context;
 
     if (eventSource && event_types) {
-        // 监听生成结束事件
-        eventSource.on(event_types.MESSAGE_RECEIVED, (data) => {
-            const messageIndex = typeof data === 'number' ? data : context.chat.length - 1;
-            onMessageReceived(messageIndex);
+        // 监听消息渲染完成事件
+        // CHARACTER_MESSAGE_RENDERED 在消息渲染到 UI 后触发
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (messageIndex) => {
+            await onMessageRendered(messageIndex);
         });
+
+        // 备用：如果 CHARACTER_MESSAGE_RENDERED 不可用，使用 MESSAGE_RECEIVED
+        // 但需要延迟等待渲染完成
+        if (!event_types.CHARACTER_MESSAGE_RENDERED) {
+            eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
+                const messageIndex = typeof data === 'number' ? data : context.chat.length - 1;
+                // 等待渲染完成
+                await new Promise(resolve => setTimeout(resolve, 100));
+                await onMessageRendered(messageIndex);
+            });
+        }
     }
 
-    console.log('[AI Polisher] 插件已加载');
+    console.log('[AI Polisher] 插件已加载 - 自动润色模式');
 });

@@ -17,20 +17,30 @@ const DEFAULT_SETTINGS = {
     apiEndpoint: 'https://api.openai.com/v1',
     apiKey: '',
     model: 'gpt-4o-mini',
-    systemPrompt: `你是一个专业的文本润色助手。请对以下文本进行润色和改写，使其更加流畅、生动、富有表现力。
+    systemPrompt: `你是一个专业的文本润色助手。你的任务是润色【待润色文本】部分，使其更加流畅、生动、富有表现力。
 
-要求：
-1. 保持原文的核心意思和情节不变
-2. 改善文字的流畅度和可读性
-3. 增强描写的生动性和感染力
-4. 修正任何语法或表达问题
+## 重要规则
+
+### 必须保留的特殊格式（原样输出，不要修改）：
+- 双花括号变量：{{user}}、{{char}}、{{random}}、{{roll}}、{{input}} 等
+- XML 标签：<thinking>、</thinking>、<hidden>、</hidden> 等任何 XML 格式标签
+- 方括号内容：[OOC: ...]、[场景说明] 等
+- 代码块：\`\`\` 包裹的内容
+- 特殊标记：★、●、■ 等符号标记的结构化内容
+- 角色扮演格式：*动作描写*、**强调内容** 等
+
+### 润色要求：
+1. 只润色【待润色文本】部分，【上下文】仅供参考剧情走向
+2. 保持原文的核心意思、情节和角色性格不变
+3. 改善文字的流畅度和可读性
+4. 增强描写的生动性和感染力
 5. 直接输出润色后的文本，不要添加任何解释或说明
-
-原文：`,
+6. 不要重复【上下文】中已有的内容`,
     streamEnabled: true,
     maxTokens: 4096,
     temperature: 0.7,
     showPlaceholder: true, // 是否显示"正在润色"占位符
+    contextMessages: 3, // 上下文消息数量（仅 AI 回复）
     availableModels: []
 };
 
@@ -160,6 +170,12 @@ function createSettingsHtml() {
                         <label for="ai_polisher_temperature">Temperature: <span id="ai_polisher_temperature_value">${settings.temperature}</span></label>
                         <input type="range" id="ai_polisher_temperature" min="0" max="2" step="0.1" value="${settings.temperature}">
                     </div>
+
+                    <div class="ai-polisher-row">
+                        <label for="ai_polisher_context">上下文楼层数 (仅 AI 回复): <span id="ai_polisher_context_value">${settings.contextMessages}</span></label>
+                        <input type="range" id="ai_polisher_context" min="0" max="10" step="1" value="${settings.contextMessages}">
+                        <small style="color: var(--SmartThemeEmColor, #888); font-size: 11px;">设为 0 则不带上下文，仅润色当前消息</small>
+                    </div>
                 </div>
 
                 <!-- System Prompt -->
@@ -251,6 +267,12 @@ function bindSettingsEvents() {
     $('#ai_polisher_temperature').on('input', function() {
         settings.temperature = parseFloat(this.value);
         $('#ai_polisher_temperature_value').text(this.value);
+        saveSettings();
+    });
+
+    $('#ai_polisher_context').on('input', function() {
+        settings.contextMessages = parseInt(this.value);
+        $('#ai_polisher_context_value').text(this.value);
         saveSettings();
     });
 
@@ -352,9 +374,69 @@ async function fetchModels() {
 }
 
 /**
+ * 获取上下文消息（仅 AI 回复，不包括当前要润色的消息）
+ * @param {number} currentIndex - 当前消息索引
+ * @param {number} count - 需要获取的上下文数量
+ * @returns {Array} 上下文消息数组
+ */
+function getContextMessages(currentIndex, count) {
+    if (count <= 0) return [];
+
+    const context = SillyTavern.getContext();
+    const chat = context.chat;
+    const contextMessages = [];
+
+    // 从当前消息往前找 AI 回复（不包括当前消息）
+    for (let i = currentIndex - 1; i >= 0 && contextMessages.length < count; i--) {
+        const msg = chat[i];
+        // 只取 AI 回复，跳过用户消息和系统消息
+        if (!msg.is_user && !msg.is_system && msg.mes) {
+            // 优先使用润色后的内容，如果没有则使用原始内容
+            // 这样上下文是已润色的版本，避免风格不一致
+            const content = msg.mes;
+            contextMessages.unshift({
+                index: i,
+                name: msg.name || 'Assistant',
+                content: content
+            });
+        }
+    }
+
+    return contextMessages;
+}
+
+/**
+ * 构建带上下文的用户消息
+ * @param {string} textToPolish - 需要润色的文本
+ * @param {Array} contextMessages - 上下文消息数组
+ * @returns {string} 构建好的用户消息
+ */
+function buildUserMessage(textToPolish, contextMessages) {
+    let userMessage = '';
+
+    // 如果有上下文，先添加上下文
+    if (contextMessages.length > 0) {
+        userMessage += '【上下文 - 仅供参考，不要润色或重复这部分内容】\n';
+        userMessage += '---\n';
+        contextMessages.forEach((msg, idx) => {
+            userMessage += `[第${idx + 1}楼 - ${msg.name}]\n${msg.content}\n\n`;
+        });
+        userMessage += '---\n\n';
+    }
+
+    // 添加需要润色的文本
+    userMessage += '【待润色文本 - 请润色以下内容】\n';
+    userMessage += '---\n';
+    userMessage += textToPolish;
+    userMessage += '\n---';
+
+    return userMessage;
+}
+
+/**
  * 调用二级 LLM API 进行润色（流式）
  */
-async function polishTextStream(text, onChunk) {
+async function polishTextStream(text, onChunk, messageIndex) {
     const settings = getSettings();
 
     if (!settings.apiEndpoint || !settings.apiKey) {
@@ -363,11 +445,17 @@ async function polishTextStream(text, onChunk) {
 
     abortController = new AbortController();
 
+    // 获取上下文
+    const contextMessages = getContextMessages(messageIndex, settings.contextMessages);
+    const userMessage = buildUserMessage(text, contextMessages);
+
+    console.log('[AI Polisher] 上下文楼层数:', contextMessages.length);
+
     const requestBody = {
         model: settings.model,
         messages: [
             { role: 'system', content: settings.systemPrompt },
-            { role: 'user', content: text }
+            { role: 'user', content: userMessage }
         ],
         max_tokens: settings.maxTokens,
         temperature: settings.temperature,
@@ -431,7 +519,7 @@ async function polishTextStream(text, onChunk) {
 /**
  * 调用二级 LLM API 进行润色（非流式）
  */
-async function polishTextSync(text) {
+async function polishTextSync(text, messageIndex) {
     const settings = getSettings();
 
     if (!settings.apiEndpoint || !settings.apiKey) {
@@ -440,11 +528,17 @@ async function polishTextSync(text) {
 
     abortController = new AbortController();
 
+    // 获取上下文
+    const contextMessages = getContextMessages(messageIndex, settings.contextMessages);
+    const userMessage = buildUserMessage(text, contextMessages);
+
+    console.log('[AI Polisher] 上下文楼层数:', contextMessages.length);
+
     const requestBody = {
         model: settings.model,
         messages: [
             { role: 'system', content: settings.systemPrompt },
-            { role: 'user', content: text }
+            { role: 'user', content: userMessage }
         ],
         max_tokens: settings.maxTokens,
         temperature: settings.temperature,
@@ -581,10 +675,10 @@ async function performPolish(messageIndex, originalText, showPlaceholder = true)
             // 流式输出
             polishedText = await polishTextStream(originalText, (chunk) => {
                 updateMessageContent(messageIndex, chunk, false);
-            });
+            }, messageIndex);
         } else {
             // 非流式输出
-            polishedText = await polishTextSync(originalText);
+            polishedText = await polishTextSync(originalText, messageIndex);
             updateMessageContent(messageIndex, polishedText, false);
         }
 

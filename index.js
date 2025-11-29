@@ -771,9 +771,10 @@ async function onMessageRendered(messageIndex) {
     }
     message.extra.ai_polisher_processed = true;
 
-    const originalText = message.mes;
+    // 优先使用 extra 中保存的原始内容（因为我们在 MESSAGE_RECEIVED 中清空了 mes）
+    const originalText = message.extra?.ai_polisher_original || message.mes;
 
-    // 临时标记为系统消息，防止其他插件（如表格插件）处理
+    // 再次确保标记为系统消息（防止漏网之鱼）
     message.is_system = true;
     if (!message.extra) message.extra = {};
     message.extra.ai_polisher_polishing = true;
@@ -812,10 +813,14 @@ jQuery(async () => {
             // 如果已经是系统消息（且不是我们标记的），则跳过（不润色系统消息）
             if (message.is_system && !message.extra?.ai_polisher_polishing) return;
 
-            // 标记为系统消息
-            message.is_system = true;
+            // 保存原始内容
             if (!message.extra) message.extra = {};
+            message.extra.ai_polisher_original = message.mes;
             message.extra.ai_polisher_polishing = true;
+
+            // 标记为系统消息并清空内容，防止其他插件（如表格插件）误触发
+            message.is_system = true;
+            message.mes = '';
         });
 
         // 监听消息渲染完成事件
